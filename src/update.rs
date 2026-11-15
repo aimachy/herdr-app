@@ -1,7 +1,9 @@
 //! The app's own updates. An installed app (Linux: `~/.local/share/herdr-app`,
-//! macOS: `Herdr.app`) checks `releases.herdr.dev/app/latest.json` a little
-//! after it opens and every hour, downloads a newer build for this
-//! machine, checks its sha256 and unpacks it next to itself (`<install>.new`).
+//! macOS: `Herdr.app`) checks the fork's GitHub Releases a little after it
+//! opens and every hour (`github.com/aimachy/herdr-app/releases`, the
+//! `app-latest.json` asset via `latest/download/`), downloads a newer build
+//! for this machine, checks its sha256 and unpacks it next to itself
+//! (`<install>.new`).
 //! The frame then shows "Restart"; the swap happens on restart or the next
 //! quit, or before opening the next window after a crash. The first start
 //! after a swap runs `hc update` for the core.
@@ -10,7 +12,8 @@
 //! builds) sets `HERDR_APP_RELEASE`. `scripts/install-macos` makes a
 //! Herdr.app too, so the install's shape alone can't tell.
 //!
-//! The core is checked on the same clock (`core/latest.json`): a newer core
+//! The core is checked on the same clock (`core-latest.json` on the
+//! herdr-core fork's GitHub Releases): a newer core
 //! of the same generation is offered (also applied after an app update), unless
 //! a package manager owns it. Within a generation a newer core only adds.
 
@@ -70,7 +73,14 @@ fn target() -> String {
 }
 
 fn releases() -> String {
-    std::env::var("HERDR_RELEASES_URL").unwrap_or_else(|_| "https://releases.herdr.dev".into())
+    std::env::var("HERDR_RELEASES_URL").unwrap_or_else(|_| "https://github.com/aimachy/herdr-app/releases".into())
+}
+
+/// The core's own release base: its override first, then the shared one.
+fn core_releases() -> String {
+    std::env::var("HERDR_CORE_RELEASES_URL")
+        .or_else(|_| std::env::var("HERDR_RELEASES_URL"))
+        .unwrap_or_else(|_| "https://github.com/aimachy/herdr-core/releases".into())
 }
 
 /// The version downloaded and waiting for a restart.
@@ -219,8 +229,8 @@ struct CoreRelease {
 }
 
 fn latest_core() -> Result<CoreRelease, String> {
-    let text = curl_text(&format!("{}/core/latest.json", releases()))?;
-    serde_json::from_str(&text).map_err(|e| format!("core/latest.json: {e}"))
+    let text = curl_text(&format!("{}/latest/download/core-latest.json", core_releases()))?;
+    serde_json::from_str(&text).map_err(|e| format!("core-latest.json: {e}"))
 }
 
 fn after_update_target<'a>(have: &str, latest: Option<&'a CoreRelease>, generation: u64, core_min: &'a str) -> Option<&'a str> {
@@ -267,7 +277,7 @@ fn check(root: &Path) -> Result<Option<String>, String> {
 }
 
 fn check_from(root: &Path, releases: &str) -> Result<Option<String>, String> {
-    let path = "app/latest.json";
+    let path = "latest/download/app-latest.json";
     let text = curl_text(&format!("{releases}/{path}"))?;
     let manifest: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
     let version = manifest["version"].as_str().ok_or(format!("{path}: no version"))?;
@@ -276,7 +286,7 @@ fn check_from(root: &Path, releases: &str) -> Result<Option<String>, String> {
     }
     // Notes are optional: a missing feed must never hold up the update.
     if !crate::update_notes::has(version)
-        && let Ok(text) = curl_text(&format!("{releases}/app/{version}/changelog.md"))
+        && let Ok(text) = curl_text(&format!("{releases}/download/v{version}/changelog.md"))
     {
         crate::update_notes::cache(&text);
     }
@@ -644,8 +654,8 @@ mod tests {
         const CHILD: &str = "HERDR_TEST_MANAGED_CORE_UPDATE";
         if std::env::var_os(CHILD).is_none() {
             let root = std::env::temp_dir().join(format!("herdr-managed-release-{}", std::process::id()));
-            std::fs::create_dir_all(root.join("core")).unwrap();
-            std::fs::write(root.join("core/latest.json"), r#"{"version":"0.1.20","generation":1}"#).unwrap();
+            std::fs::create_dir_all(root.join("latest/download")).unwrap();
+            std::fs::write(root.join("latest/download/core-latest.json"), r#"{"version":"0.1.20","generation":1}"#).unwrap();
             let output = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "update::tests::managed_cores_report_new_releases_without_running_updates", "--nocapture"])
                 .env(CHILD, "1")
@@ -692,7 +702,7 @@ mod tests {
                     stream.read_exact(&mut byte).unwrap();
                     request.push(byte[0]);
                 }
-                assert!(request.starts_with(b"GET /app/latest.json HTTP/1.1\r\n"));
+                assert!(request.starts_with(b"GET /latest/download/app-latest.json HTTP/1.1\r\n"));
                 if recover {
                     let body = format!(r#"{{"version":"{}"}}"#, env!("CARGO_PKG_VERSION"));
                     write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
@@ -826,7 +836,7 @@ mod tests {
     #[ignore = "downloads the current release; runs real codesign on isolated bundles"]
     fn macos_unpack_preserves_release_signature_and_prepares_dev_builds() {
         let version = env!("CARGO_PKG_VERSION");
-        let manifest: serde_json::Value = serde_json::from_str(&curl_text(&format!("{}/app/{version}/manifest.json", releases())).unwrap()).unwrap();
+        let manifest: serde_json::Value = serde_json::from_str(&curl_text(&format!("{}/download/v{version}/manifest.json", releases())).unwrap()).unwrap();
         let work = std::env::temp_dir().join(format!("herdr-signature-test-{}", std::process::id()));
         let signed = work.join("signed");
         let reference = work.join("reference");
