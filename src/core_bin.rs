@@ -170,14 +170,14 @@ fn login_shell_path() -> Option<std::ffi::OsString> {
 /// Installs the core's latest release with its own installer (into
 /// ~/.local/bin, or HC_INSTALL_DIR), then finds it. Err: what went wrong.
 pub fn install() -> Result<PathBuf, String> {
-    let releases = std::env::var("HERDR_RELEASES_URL").unwrap_or_else(|_| "https://releases.herdr.dev".into());
+    let releases = std::env::var("HERDR_RELEASES_URL").unwrap_or_else(|_| "https://github.com/aimachy/herdr-core/releases".into());
     let mut cmd = if cfg!(windows) {
         let mut c = crate::spawn::command("powershell");
-        c.args(["-NoProfile", "-Command", &format!("irm {releases}/core/install.ps1 | iex")]);
+        c.args(["-NoProfile", "-Command", &format!("irm {releases}/latest/download/install.ps1 | iex")]);
         c
     } else {
         let mut c = crate::spawn::command("sh");
-        c.args(["-c", &format!("curl -fsSL {releases}/core/install.sh | sh")]);
+        c.args(["-c", &format!("curl -fsSL {releases}/latest/download/install.sh | sh")]);
         c
     };
     let out = cmd.stdin(Stdio::null()).output().map_err(|e| format!("cannot run the installer: {e}"))?;
@@ -226,7 +226,7 @@ pub fn update_to(at_least: Option<&str>) -> Result<String, String> {
 }
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
-const BUNDLE_INSTALL_SCRIPT: &str = "installer=$(curl -fsSL \"$1/core/install.sh\") && case \"$installer\" in *HC_BUNDLE_ONLY*) printf '%s\\n' \"$installer\" | sh ;; *) exit 0 ;; esac";
+const BUNDLE_INSTALL_SCRIPT: &str = "installer=$(curl -fsSL \"$1/latest/download/install.sh\") && case \"$installer\" in *HC_BUNDLE_ONLY*) printf '%s\\n' \"$installer\" | sh ;; *) exit 0 ;; esac";
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
 fn bundle_completion_path(bin: &Path, home: &Path) -> bool {
@@ -259,7 +259,7 @@ fn ensure_core_bundle(version: &str) -> Result<(), String> {
     if !official {
         return Ok(());
     }
-    let releases = std::env::var("HERDR_RELEASES_URL").unwrap_or_else(|_| "https://releases.herdr.dev".into());
+    let releases = std::env::var("HERDR_RELEASES_URL").unwrap_or_else(|_| "https://github.com/aimachy/herdr-core/releases".into());
     let mut cmd = crate::spawn::command("sh");
     cmd.args([
         "-c",

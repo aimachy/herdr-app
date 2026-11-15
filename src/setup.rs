@@ -17,13 +17,13 @@ use std::sync::Arc;
 
 const ICON: &[u8] = include_bytes!("../assets/icons/herdr-ui-icon-clean.png");
 #[cfg(not(windows))]
-const APP_INSTALL: &str = "curl -fsSL https://releases.herdr.dev/app/install.sh | sh";
+const APP_INSTALL: &str = "curl -fsSL https://github.com/aimachy/herdr-app/releases/latest/download/install.sh | sh";
 #[cfg(windows)]
-const APP_INSTALL: &str = "powershell -c \"irm https://releases.herdr.dev/app/install.ps1 | iex\"";
+const APP_INSTALL: &str = "powershell -c \"irm https://github.com/aimachy/herdr-app/releases/latest/download/install.ps1 | iex\"";
 #[cfg(not(windows))]
-const CORE_INSTALL: &str = "curl -fsSL https://releases.herdr.dev/core/install.sh | sh";
+const CORE_INSTALL: &str = "curl -fsSL https://github.com/aimachy/herdr-core/releases/latest/download/install.sh | sh";
 #[cfg(windows)]
-const CORE_INSTALL: &str = "powershell -c \"irm https://releases.herdr.dev/core/install.ps1 | iex\"";
+const CORE_INSTALL: &str = "powershell -c \"irm https://github.com/aimachy/herdr-core/releases/latest/download/install.ps1 | iex\"";
 const CORE_PLACE: &str = if cfg!(windows) { r"%LOCALAPPDATA%\Programs\herdr-core" } else { "~/.local/bin" };
 
 /// What's missing before the main window can open.
