@@ -800,17 +800,31 @@ fn exec_limit(options: Option<&HostValue>) -> Result<Duration, HostError> {
 }
 
 pub(crate) fn run_blocking(command: &str, args: &[String], cwd: Option<String>, limit: Duration) -> Result<(i32, String, String), String> {
-    use std::io::Read;
+    run_blocking_stdin(command, args, cwd, limit, None)
+}
+
+/// `run_blocking` with optional stdin text: the one way a secret (a login
+/// password) reaches a child — written to its stdin, never an argument,
+/// never saved. Without text the child gets no stdin, as before.
+pub(crate) fn run_blocking_stdin(command: &str, args: &[String], cwd: Option<String>, limit: Duration, stdin_text: Option<&str>) -> Result<(i32, String, String), String> {
+    use std::io::{Read, Write};
     // The core may have no `hc` link beside it (a Windows zip has only herdr-core.exe).
     let program = if command == "hc" { crate::core_bin::path() } else { PathBuf::from(command) };
     let mut child = crate::spawn::command(program)
         .args(args)
         .current_dir(cwd.map(PathBuf::from).unwrap_or_else(home))
-        .stdin(Stdio::null())
+        .stdin(if stdin_text.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("cannot run {command}: {e}"))?;
+    if let (Some(text), Some(mut pipe)) = (stdin_text, child.stdin.take()) {
+        let text = text.to_owned();
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(text.as_bytes());
+            let _ = pipe.flush();
+        });
+    }
     // Bounded: a chatty command can't fill memory; the rest is drained and dropped.
     let drain = |r: Box<dyn Read + Send>| {
         std::thread::spawn(move || {
@@ -906,12 +920,13 @@ fn read_remote(machine: &str, path: &str) -> Result<Option<String>, String> {
     Ok(Some(String::from_utf8_lossy(&out).into_owned()))
 }
 
-fn exec_future(command: String, args: Vec<String>, cwd: Option<String>, on: Option<String>, limit: Duration) -> impl std::future::Future<Output = Result<HostValue, HostError>> + Send {
+fn exec_future(command: String, args: Vec<String>, cwd: Option<String>, on: Option<String>, limit: Duration, stdin_text: Option<String>) -> impl std::future::Future<Output = Result<HostValue, HostError>> + Send {
     let (tx, rx) = async_channel::bounded(1);
     let run = move || {
         let r = match on {
+            Some(_) if stdin_text.is_some() => Err("stdin is only for a program on this machine".to_string()),
             Some(m) => run_remote_with_limit(&m, &command, &args, cwd, limit).map(|(c, o, e)| (c, String::from_utf8_lossy(&o).into_owned(), String::from_utf8_lossy(&e).into_owned())),
-            None => run_blocking(&command, &args, cwd, limit),
+            None => run_blocking_stdin(&command, &args, cwd, limit, stdin_text.as_deref()),
         };
         let _ = tx.send_blocking(r);
     };
@@ -946,7 +961,7 @@ fn module(inst: Instance, copy: u64) -> HostModule {
         .declarations(DECLARATIONS)
         .async_function("exec", |a| {
             let command = a.string(0)?.to_owned();
-            Ok(exec_future(command, strings(a.get(1)), opt_str(a.get(2), "cwd"), opt_str(a.get(2), "on"), exec_limit(a.get(2))?))
+            Ok(exec_future(command, strings(a.get(1)), opt_str(a.get(2), "cwd"), opt_str(a.get(2), "on"), exec_limit(a.get(2))?, None))
         })
         .async_function("readTextFile", |a| {
             let path = a.string(0)?.to_owned();
@@ -960,7 +975,7 @@ fn module(inst: Instance, copy: u64) -> HostModule {
             let expected = a.get(2).and_then(|v| match v { HostValue::Str(s) => Some(s.clone()), _ => None });
             Ok(crate::mod_files::write_text(a.string(0)?.to_owned(), a.string(1)?.to_owned(), expected))
         })
-        .async_function("hc", |a| Ok(exec_future("hc".into(), strings(a.get(0)), None, None, EXEC_LIMIT)))
+        .async_function("hc", |a| Ok(exec_future("hc".into(), strings(a.get(0)), None, None, EXEC_LIMIT, opt_str(a.get(1), "stdin"))))
         .function("home", |_| Ok(home().to_string_lossy().into_owned().into()))
         .function("appHome", |_| Ok(app_dir().to_string_lossy().into_owned().into()))
         .function("fonts", |_| Ok(to_host(&json!(*FONTS.lock().unwrap()))))
@@ -1304,6 +1319,14 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn exec_stdin_text_reaches_the_child() {
+        let args = ["-c".into(), "read -r line; printf %s \"$line\"".into()];
+        let (code, stdout, _) = run_blocking_stdin("sh", &args, None, Duration::from_secs(2), Some("a-password\n")).unwrap();
+        assert_eq!((code, stdout.as_str()), (0, "a-password"));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn exec_uses_the_requested_deadline_and_reports_it() {
         let args = ["-c".into(), "sleep 0.15; printf done".into()];
         let error = run_blocking("sh", &args, None, Duration::from_millis(30)).unwrap_err();
@@ -1315,12 +1338,12 @@ mod tests {
     #[cfg(unix)]
     #[gpui::test]
     async fn exec_returns_real_output_and_errors_under_the_test_scheduler(_cx: &mut gpui::TestAppContext) {
-        let result = exec_future("sh".into(), vec!["-c".into(), "printf out; printf err >&2; exit 7".into()], None, None, EXEC_LIMIT).await.unwrap();
+        let result = exec_future("sh".into(), vec!["-c".into(), "printf out; printf err >&2; exit 7".into()], None, None, EXEC_LIMIT, None).await.unwrap();
         assert!(matches!(result.get("code"), Some(HostValue::Number(7.0))));
         assert!(matches!(result.get("stdout"), Some(HostValue::Str(s)) if s == "out"));
         assert!(matches!(result.get("stderr"), Some(HostValue::Str(s)) if s == "err"));
-        assert!(exec_future("herdr_test_missing_command_638".into(), vec![], None, None, EXEC_LIMIT).await.is_err());
-        let error = exec_future("sh".into(), vec!["-c".into(), "sleep 0.15; printf late".into()], None, None, Duration::from_millis(30)).await.unwrap_err();
+        assert!(exec_future("herdr_test_missing_command_638".into(), vec![], None, None, EXEC_LIMIT, None).await.is_err());
+        let error = exec_future("sh".into(), vec!["-c".into(), "sleep 0.15; printf late".into()], None, None, Duration::from_millis(30), None).await.unwrap_err();
         assert!(error.to_string().contains("0.03 s"), "{error}");
     }
 

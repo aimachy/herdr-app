@@ -13,8 +13,11 @@ export interface ExecResult {
  *  Rejects when it can't start (not installed, no such folder, the machine is unreachable). */
 export function exec(command: string, args?: string[], options?: { cwd?: string; on?: string | null; timeout?: number }): Promise<ExecResult>;
 
-/** Runs `hc` (herdr-core) with the given arguments. Add "--json" for machine output. */
-export function hc(args: string[]): Promise<ExecResult>;
+/** Runs `hc` (herdr-core) with the given arguments. Add "--json" for machine output.
+ *  `stdin`: text written to its stdin — the way a secret reaches it (e.g. a
+ *  login password for `machine add --password-stdin`): never an argument,
+ *  never saved. */
+export function hc(args: string[], options?: { stdin?: string }): Promise<ExecResult>;
 
 /** The user's home directory. */
 export function home(): string;

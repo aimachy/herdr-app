@@ -1090,7 +1090,9 @@ All of it is in `herdr.d.ts`. In short:
   not `process.run`; `on: space.machine` runs there, omitted means local).
   `timeout` is milliseconds, defaults to 30,000 and is capped at 600,000 (10 minutes),
   locally and remotely. It rejects on timeout, if the program cannot start or the machine cannot be reached.
-  `hc(args)` (`hc read <t>` gives a terminal's text),
+  `hc(args, { stdin })` (`hc read <t>` gives a terminal's text; `stdin` writes
+  text to its stdin — how a secret like a machine password reaches
+  `machine add --password-stdin`, never as an argument),
   `home()`, `appHome()`, `playSound("done" | "blocked" | file)`.
   `knownAgents({ on })`: the agents people can start (programs.json's
   `run`), most picked first, each `installed` or not there (asked of the
