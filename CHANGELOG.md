@@ -1,5 +1,12 @@
 # Herdr changelog
 
+## [0.1.16] - 2026-11-16
+
+### New
+- **Add a machine with a password.** The Add machine dialog takes an address, a port, a user and a password: no ssh config file, and no key waiting on the other side. Herdr shows the server's host key first and pins it only when you trust it, then plants a key made for that one machine, so later connections need no password. The password itself is never stored and never passed as an argument.
+- **A server that takes no password logins says so.** When a server has password authentication turned off (many cloud images ship that way), adding it no longer ends in a plain refusal: the dialog explains that the password was never checked, and shows the one command that enables password login for just your account. Run it on the server, then add again.
+- **This fork updates from its own GitHub releases.** The app updates itself from aimachy/herdr-app releases and takes the core from aimachy/herdr-core releases, so a fork install never silently becomes an upstream one. INSTALL.md walks through the whole setup, from the server script to adding a machine.
+
 ## [0.1.15] - 2026-11-10
 
 ### New
