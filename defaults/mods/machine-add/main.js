@@ -80,6 +80,7 @@ export default class MachineAdd extends View {
     this.formState = null;
     this.formAdding = false;
     this.trust = null; // a presented host key's fingerprint, awaiting the person's yes
+    this.passwordDisabled = null; // { host, user, command }: that server takes no password logins at all
     this.formFocus = null;
     this.formInputs = {};
     for (const [key, placeholder] of [["host", "IP or host name"], ["port", "Port (22)"], ["user", "User name"], ["pass", "Password"]]) {
@@ -174,6 +175,7 @@ export default class MachineAdd extends View {
     if (!this.form.pass) { this.formState = "Type the password for that machine."; cx.notify(); return; }
     this.formAdding = true;
     this.formState = null;
+    this.passwordDisabled = null;
     if (!trustKey) this.trust = null;
     cx.notify();
     cx.spawn(async (cx) => {
@@ -198,6 +200,15 @@ export default class MachineAdd extends View {
         this.formState = this.trust
           ? `First contact: ${host} presents the host key ${this.trust}. Check it against the server itself (its console, or your hoster's panel) and trust it only if it matches.`
           : why.message;
+      } else if (why.kind === "password_auth_disabled") {
+        // Not a wrong password: that server takes no password logins at
+        // all, so the password was never checked. Keep this.trust — the
+        // host key was presented before the password was tried, and the
+        // retry after the fix still needs the person's yes on it. The
+        // command rides the error's hint, alone on its last line.
+        const lines = (why.hint ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
+        this.passwordDisabled = { host, user, command: lines[lines.length - 1] ?? "" };
+        this.formState = null;
       } else if (why.kind === "auth_failed" || why.kind === "needs_login") {
         this.trust = null;
         this.formState = "Login failed: the machine refused that user name or password.";
@@ -229,6 +240,25 @@ export default class MachineAdd extends View {
       .text_size(13)
       .text_color(t.foreground);
     return flex ? el.flex_1() : el.w(96);
+  }
+
+  // That server takes no password logins at all: say so plainly (it is not
+  // a wrong password), give the one command that turns password login on
+  // for just this account, and let the person retry here afterwards.
+  passwordDisabledCard(t) {
+    const d = this.passwordDisabled;
+    const command = d.command;
+    return v_flex().id("ma-pw-disabled").mt(10).p(12).gap(8).rounded(10)
+      .bg(t.blocked + "14").border_1().border_color(t.blocked + "40")
+      .child(div().text_size(12.8).font_semibold().text_color(t.foreground).child(`Password logins are off on ${d.host}`))
+      .child(div().text_size(12.5).line_height("18px").text_color(t.muted)
+        .child(`That server does not accept password logins for ${d.user}, so your password was never checked — this is not a wrong password. To turn password login on for just your account, run this on ${d.host} once (it needs sudo), then add again here:`))
+      .when(Boolean(command), (el) => el.child(h_flex().gap(8).items_center()
+        .child(div().flex_1().min_w(0).text_size(12).text_color(t.foreground).child(command))
+        .child(div().id("ma-pw-disabled-copy").px(10).py(4).rounded(6).bg(t.raised).text_color(t.foreground)
+          .text_size(12).cursor_pointer().hover(s => s.bg(t.hover))
+          .on_click((_e, cx) => { cx.write_to_clipboard(command); this.copiedCommand = command; cx.notify(); })
+          .child(this.copiedCommand === command ? "Copied" : "Copy"))));
   }
 
   formSection(t) {
@@ -284,7 +314,8 @@ export default class MachineAdd extends View {
             ),
           ),
       )
-      .when(Boolean(this.formState), (el) => el.child(div().pt(8).text_size(12).line_height("17px").text_color(t.blocked).child(this.formState)));
+      .when(Boolean(this.formState), (el) => el.child(div().pt(8).text_size(12).line_height("17px").text_color(t.blocked).child(this.formState)))
+      .when(Boolean(this.passwordDisabled), (el) => el.child(this.passwordDisabledCard(t)));
   }
 
   // macOS asks on its own screen before anything reads Desktop, Documents
