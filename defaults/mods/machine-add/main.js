@@ -195,6 +195,10 @@ export default class MachineAdd extends View {
         this.formInputs.pass.set_value("");
         this.form.pass = "";
         await this.refresh();
+        // Added: the password's one job is done, so the dialog closes
+        // with it. The config list above stays open on purpose — people
+        // add several machines there in a row.
+        this.close();
       } else if (why.kind === "host_key") {
         this.trust = (why.message ?? "").match(/SHA256:[A-Za-z0-9+/=]+/)?.[0] ?? null;
         this.formState = this.trust
