@@ -26,11 +26,12 @@ How it differs from upstream Herdr:
   pre-creates a space named after the server, with Pi already running
   in it.
 
-> **Status, November 2026.** herdr-core has a fork release — v0.1.22 —
-> and everything below that installs or updates the core uses it. The
-> desktop app does **not** have a fork release yet: for now you build
-> it from source (§3). When an app release ships, §3 will be replaced
-> with download steps.
+> **Status, November 2026.** Both halves have fork releases:
+> herdr-core v0.1.22 and the desktop app v0.1.16. §3 starts with
+> downloading the app; building it from source remains as an
+> alternative. The macOS app build is ad-hoc signed and the Windows
+> build is unsigned (§6), so expect the usual first-run warnings from
+> those systems.
 
 ## 1. What you need
 
@@ -116,13 +117,38 @@ irm https://github.com/aimachy/herdr-core/releases/latest/download/install.ps1 |
 
 ## 3. Desktop app
 
-### Install: build from source (for now)
+### Install: download a release
 
-There is no fork app release yet, so build the app from the `fleet`
-branch of this repo. You need git, Rust 1.95.0 and Zig 0.16.0 (the
-versions CI uses), and [just](https://github.com/casey/just); Linux
-also needs the development packages listed in
-`.github/workflows/ci.yml`.
+Download the package for your platform from the fork's Releases —
+<https://github.com/aimachy/herdr-app/releases/latest> (the first
+release is v0.1.16):
+
+- **Windows (x64):** `herdr-app-windows-x86_64.tar.gz` — extract it
+  and run `herdr-app\herdr-app.exe` from the extracted folder. The
+  build is unsigned, so SmartScreen will warn on first run.
+- **macOS (Apple Silicon):** `herdr-app-macos-aarch64.tar.gz` —
+  extract it and move `Herdr.app` to Applications. The build is
+  ad-hoc signed, not notarized, so Gatekeeper will refuse a plain
+  double-click: right-click the app and choose **Open** the first
+  time.
+- **Linux (x86-64 or ARM64):** `herdr-app-linux-x86_64.tar.gz` (or
+  `herdr-app-linux-aarch64.tar.gz`) — extract it and run
+  `herdr-app/herdr-app` from the extracted folder.
+
+Notes:
+
+- Do not use the installers on `releases.herdr.dev`: they install the
+  upstream app, not this fork.
+- The app needs a herdr-core on this computer too; it fetches it from
+  this fork's Releases, so it matches the fork. From then on the app
+  updates itself from this fork's Releases (§4).
+
+### Alternative: build from source
+
+Build the app from the `fleet` branch of this repo. You need git,
+Rust 1.95.0 and Zig 0.16.0 (the versions CI uses), and
+[just](https://github.com/casey/just); Linux also needs the
+development packages listed in `.github/workflows/ci.yml`.
 
 ```sh
 git clone --recurse-submodules https://github.com/aimachy/herdr-app.git
@@ -132,14 +158,9 @@ just build
 just install
 ```
 
-Notes:
-
-- The fork's changes live on the `fleet` branch. The default branch
-  is a plain mirror of upstream and does **not** have them.
-- Do not use the installers on `releases.herdr.dev`: they install the
-  upstream app, not this fork.
-- The app needs a herdr-core on this computer too; the fork build
-  fetches it from this fork's Releases, so it matches the fork.
+The fork's changes live on the `fleet` branch. The default branch is
+a plain mirror of upstream and does **not** have them. A build from
+source does not update itself (§4).
 
 ### Add the server
 
@@ -193,8 +214,9 @@ hc machine add --host 203.0.113.10 --user ubuntu --port 22 --password-stdin \
   copies this `hc` there and restarts the core there; its terminals
   keep running. Re-running `fleet/install.sh` on the server also
   updates the core in place.
-- **The app:** once a fork app release exists, the app will update
-  itself from `aimachy/herdr-app` Releases. A build from source does
+- **The app:** a release build updates itself from
+  `aimachy/herdr-app` Releases (it checks `app-latest.json`, verifies
+  the download's sha256, and swaps itself). A build from source does
   not update itself — pull the `fleet` branch and rebuild.
 
 ## 5. Troubleshooting
@@ -264,8 +286,10 @@ command the card shows.
 
 ## 6. Known limitations
 
-- **App release pending.** The desktop app is built from source for
-  now (§3); herdr-core is the only fork release so far (v0.1.22).
+- **App builds are unsigned.** The macOS app is ad-hoc signed and
+  not notarized, and the Windows app is unsigned: expect Gatekeeper
+  and SmartScreen first-run warnings (§3). The macOS app build comes
+  from CI and has not been run on a real Mac yet.
 - **Windows servers** are not covered by the embedded password
   sign-in, which targets Unix sshd. Add Windows machines the classic
   way (system ssh / `~/.ssh/config`), as upstream.
