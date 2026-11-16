@@ -333,7 +333,8 @@ layout's look and a block can differ:
 - `themes/<name>.json`: `{ "background", "foreground", "selection",
   "cursor"?, "ansi": [16 colors], "colors"?: {...} }`, all `#rrggbb`; panel
   colors are derived from these, `colors` overrides them. Herdr ships
-  `atom-one-dark`. The original unedited Atom One Dark and Win98 theme files
+  `atom-one-dark`, `win98` and twenty theme files converted from the
+  NyaTerm project (Apache-2.0). The original unedited Atom One Dark and Win98 theme files
   are upgraded to readable terminal colors; edited theme files are kept.
   A theme named like a layout (`themes/win98.json`) is
   that layout's own: Settings offers it only there.

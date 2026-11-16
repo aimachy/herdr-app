@@ -97,8 +97,36 @@ fn preset(name: &str) -> Option<&'static Palette> {
 const THEMES: &[(&str, &str)] = &[
     ("atom-one-dark", include_str!("../defaults/themes/atom-one-dark.json")),
     ("win98", include_str!("../defaults/themes/win98.json")),
+    // Twenty themes converted from NyaTerm (Apache-2.0); see defaults/themes/README.md.
+    ("catppuccin-latte", include_str!("../defaults/themes/catppuccin-latte.json")),
+    ("catppuccin-mocha", include_str!("../defaults/themes/catppuccin-mocha.json")),
+    ("dracula", include_str!("../defaults/themes/dracula.json")),
+    ("dracula-light", include_str!("../defaults/themes/dracula-light.json")),
+    ("github-dark", include_str!("../defaults/themes/github-dark.json")),
+    ("github-light", include_str!("../defaults/themes/github-light.json")),
+    ("gruvbox-dark", include_str!("../defaults/themes/gruvbox-dark.json")),
+    ("monokai-pro", include_str!("../defaults/themes/monokai-pro.json")),
+    ("nord", include_str!("../defaults/themes/nord.json")),
+    ("nord-light", include_str!("../defaults/themes/nord-light.json")),
+    ("nya-high-contrast", include_str!("../defaults/themes/nya-high-contrast.json")),
+    ("nya-high-contrast-white", include_str!("../defaults/themes/nya-high-contrast-white.json")),
+    ("one-dark-pro", include_str!("../defaults/themes/one-dark-pro.json")),
+    ("one-light", include_str!("../defaults/themes/one-light.json")),
+    ("rose-pine", include_str!("../defaults/themes/rose-pine.json")),
+    ("rose-pine-dawn", include_str!("../defaults/themes/rose-pine-dawn.json")),
+    ("solarized-light", include_str!("../defaults/themes/solarized-light.json")),
+    ("tokyo-night", include_str!("../defaults/themes/tokyo-night.json")),
+    ("windterm-dark", include_str!("../defaults/themes/windterm-dark.json")),
+    ("windterm-light", include_str!("../defaults/themes/windterm-light.json")),
 ];
-pub const SHIPPED_THEMES: &[&str] = &["atom-one-dark", "win98"];
+pub const SHIPPED_THEMES: &[&str] = &[
+    "atom-one-dark", "win98",
+    "catppuccin-latte", "catppuccin-mocha", "dracula", "dracula-light",
+    "github-dark", "github-light", "gruvbox-dark", "monokai-pro", "nord",
+    "nord-light", "nya-high-contrast", "nya-high-contrast-white",
+    "one-dark-pro", "one-light", "rose-pine", "rose-pine-dawn",
+    "solarized-light", "tokyo-night", "windterm-dark", "windterm-light",
+];
 
 /// `themes/<name>.json`: a palette, plus `colors` overrides like settings.json's.
 #[derive(Deserialize)]
