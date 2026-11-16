@@ -47,3 +47,9 @@ smallest shift that clears 4.5):
 
 Re-running `convert.py` restores NyaTerm's values; re-apply these three
 adjustments afterwards.
+
+The pre-fix originals of these three themes are registered in
+`PREVIOUS_THEMES` (src/settings.rs), so an unedited copy of the old version
+in a user's themes folder is upgraded to the fixed version automatically
+on first start of the next release; copies the user has edited are left
+untouched.

@@ -188,6 +188,134 @@ const PREVIOUS_THEMES: &[(&str, &str)] = &[
   }
 }
 "##),
+    // Pre-legibility-fix originals of the three themes whose selection was
+    // raised (see defaults/themes/README.md); unedited copies upgrade on start.
+    ("one-dark-pro", r##"{
+  "background": "#222831",
+  "foreground": "#abb2bf",
+  "selection": "#465163",
+  "cursor": "#528bff",
+  "ansi": [
+    "#3f4451",
+    "#ef7d86",
+    "#98c379",
+    "#e5c07b",
+    "#61afef",
+    "#c678dd",
+    "#56b6c2",
+    "#abb2bf",
+    "#8b929e",
+    "#ef7d86",
+    "#98c379",
+    "#d19a66",
+    "#61afef",
+    "#c678dd",
+    "#56b6c2",
+    "#e6e6e6"
+  ],
+  "colors": {
+    "canvas": "#252a32",
+    "chrome": "#1f242b",
+    "popover": "#1f242b",
+    "input": "#212730",
+    "hover": "#333b47",
+    "border": "#4b5563",
+    "foreground": "#abb2bf",
+    "muted": "#7f848e",
+    "dim": "#5c6370",
+    "accent": "#61afef",
+    "accent_foreground": "#282c34",
+    "ring": "#61afef",
+    "working": "#e5c07b",
+    "blocked": "#e06c75",
+    "done": "#98c379"
+  }
+}
+"##),
+    ("solarized-light", r##"{
+  "background": "#fff7df",
+  "foreground": "#586e75",
+  "selection": "#ead6a7",
+  "cursor": "#586e75",
+  "ansi": [
+    "#073642",
+    "#c42b2b",
+    "#667900",
+    "#7a5f00",
+    "#006fb3",
+    "#b12a6d",
+    "#007f79",
+    "#657b83",
+    "#002b36",
+    "#a91f1f",
+    "#556b00",
+    "#665100",
+    "#005f9e",
+    "#962057",
+    "#006b66",
+    "#586e75"
+  ],
+  "colors": {
+    "canvas": "#fff4d6",
+    "chrome": "#f1dfb8",
+    "popover": "#f1dfb8",
+    "input": "#fff7df",
+    "hover": "#e7d19f",
+    "border": "#c9a86a",
+    "foreground": "#586e75",
+    "muted": "#93a1a1",
+    "dim": "#839496",
+    "accent": "#268bd2",
+    "accent_foreground": "#002b36",
+    "ring": "#268bd2",
+    "working": "#b58900",
+    "blocked": "#dc322f",
+    "done": "#859900"
+  }
+}
+"##),
+    ("tokyo-night", r##"{
+  "background": "#0b1020",
+  "foreground": "#a9b1d6",
+  "selection": "#294f8d",
+  "cursor": "#c0caf5",
+  "ansi": [
+    "#414868",
+    "#f7768e",
+    "#9ece6a",
+    "#e0af68",
+    "#7aa2f7",
+    "#bb9af7",
+    "#7dcfff",
+    "#c0caf5",
+    "#565f89",
+    "#ff8ea3",
+    "#b9f27c",
+    "#f4c980",
+    "#8db8ff",
+    "#c7a9ff",
+    "#9ae6ff",
+    "#d5dcff"
+  ],
+  "colors": {
+    "canvas": "#111827",
+    "chrome": "#0f1524",
+    "popover": "#0f1524",
+    "input": "#111a2d",
+    "hover": "#1f2d4d",
+    "border": "#31436d",
+    "foreground": "#a9b1d6",
+    "muted": "#737aa2",
+    "dim": "#565f89",
+    "accent": "#7aa2f7",
+    "accent_foreground": "#1a1b26",
+    "ring": "#7aa2f7",
+    "working": "#e0af68",
+    "blocked": "#f7768e",
+    "done": "#9ece6a"
+  }
+}
+"##),
 ];
 
 pub fn install_themes() {
@@ -254,7 +382,48 @@ fn shipped_theme_upgrades_preserve_personal_edits() {
         std::fs::write(&path, previous).unwrap();
         install_theme(&path, name, current);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), current);
-        let edited = previous.replace("#abb2bf", "#abcdef").replace("#c0c0c0", "#abcdef");
+        let mut edited = previous.replace("#abb2bf", "#abcdef").replace("#c0c0c0", "#abcdef");
+        if edited == *previous {
+            // Neither color appears in this theme; flip one hex digit instead.
+            let pos = previous.find('#').unwrap() + 1;
+            let mut bytes = edited.into_bytes();
+            bytes[pos] = if bytes[pos] == b'0' { b'1' } else { b'0' };
+            edited = String::from_utf8(bytes).unwrap();
+        }
+        std::fs::write(&path, &edited).unwrap();
+        install_theme(&path, name, current);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
+        std::fs::remove_file(&path).unwrap();
+    }
+    std::fs::remove_dir(root).unwrap();
+}
+
+#[test]
+fn legibility_fixed_themes_upgrade_unedited_copies() {
+    // (name, selection before the legibility fix, selection after it)
+    let cases = [
+        ("one-dark-pro", "#465163", "#3c4555"),
+        ("solarized-light", "#ead6a7", "#f5ebd3"),
+        ("tokyo-night", "#294f8d", "#24457a"),
+    ];
+    let root = std::env::temp_dir().join(format!("herdr-theme-legibility-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    for (name, old_selection, new_selection) in cases {
+        let previous = PREVIOUS_THEMES.iter().find(|(n, _)| *n == name).unwrap().1;
+        let current = THEMES.iter().find(|(n, _)| *n == name).unwrap().1;
+        assert!(previous.contains(old_selection), "{name}: registered original is not the pre-fix version");
+        assert!(current.contains(new_selection), "{name}: shipped theme lacks the fixed selection");
+        let path = root.join(format!("{name}.json"));
+        install_theme(&path, name, current);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), current);
+        std::fs::write(&path, previous).unwrap();
+        install_theme(&path, name, current);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), current);
+        // One byte changed in the old file makes it a personal edit: it stays.
+        let pos = previous.find(old_selection).unwrap() + old_selection.len() - 1;
+        let mut bytes = previous.as_bytes().to_vec();
+        bytes[pos] = if bytes[pos] == b'0' { b'1' } else { b'0' };
+        let edited = String::from_utf8(bytes).unwrap();
         std::fs::write(&path, &edited).unwrap();
         install_theme(&path, name, current);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);

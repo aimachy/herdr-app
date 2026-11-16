@@ -335,7 +335,9 @@ layout's look and a block can differ:
   colors are derived from these, `colors` overrides them. Herdr ships
   `atom-one-dark`, `win98` and twenty theme files converted from the
   NyaTerm project (Apache-2.0). The original unedited Atom One Dark and Win98 theme files
-  are upgraded to readable terminal colors; edited theme files are kept.
+  are upgraded to readable terminal colors, as are unedited copies of One Dark Pro,
+  Solarized Light and Tokyo Night from before their selection legibility fix;
+  edited theme files are kept.
   A theme named like a layout (`themes/win98.json`) is
   that layout's own: Settings offers it only there.
 - `terminal_line_height`: row height multiplier (default 1, clamped to 0.8..2).
