@@ -206,12 +206,28 @@ pub fn update() -> Result<String, String> {
 
 /// `hc update --version X`: at least X (a newer core stays). Cores before 0.1.5 lack it.
 pub fn update_to(at_least: Option<&str>) -> Result<String, String> {
-    let mut cmd = crate::spawn::command(path());
-    cmd.args(["update", "--json"]);
+    let mut args = vec!["update".to_string(), "--json".to_string()];
     if let Some(v) = at_least {
-        cmd.args(["--version", v]);
+        args.extend(["--version".to_string(), v.to_string()]);
     }
-    let out = cmd.stdin(Stdio::null()).output().map_err(|e| format!("cannot run hc update: {e}"))?;
+    update_with(&args)
+}
+
+/// Hands the installed hc a core binary to swap in (`hc update --from <bin>`).
+fn update_from(bin: &Path) -> Result<String, String> {
+    update_with(&update_from_args(bin))
+}
+
+/// The `--from` argument list, kept separate so tests can pin it.
+fn update_from_args(bin: &Path) -> Vec<String> {
+    vec!["update".to_string(), "--from".to_string(), bin.to_string_lossy().into_owned(), "--json".to_string()]
+}
+
+/// Runs one `hc update` form against the installed core and reads its reply:
+/// Ok is the version it runs now (`now`), Err is what it said, e.g.
+/// "belongs to Homebrew: brew upgrade herdr-core".
+fn update_with(args: &[String]) -> Result<String, String> {
+    let out = crate::spawn::command(path()).args(args).stdin(Stdio::null()).output().map_err(|e| format!("cannot run hc update: {e}"))?;
     let reply: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
     if out.status.success() {
         let now = reply.get("now").and_then(|v| v.as_str()).unwrap_or("the latest").to_owned();
@@ -223,6 +239,122 @@ pub fn update_to(at_least: Option<&str>) -> Result<String, String> {
     let message = err.pointer("/error/message").and_then(|v| v.as_str()).map(str::to_owned);
     let hint = err.pointer("/error/hint").and_then(|v| v.as_str()).map(|h| format!(" ({h})")).unwrap_or_default();
     Err(message.map(|m| m + &hint).unwrap_or_else(|| String::from_utf8_lossy(&out.stderr).trim().to_owned()))
+}
+
+// Updating from the fork's own releases. The update check reads the fork's
+// GitHub Releases, so the swap has to come from there too: an hc installed
+// from upstream updates itself from upstream's list, never sees the fork's
+// builds, and still reports success. So the app downloads the fork's build
+// itself, checks it, and hands it to the installed hc's `update --from`:
+// the swap, the package-manager refusal and the terminal-keeping restart
+// all stay hc's own work.
+
+/// One core release list (`core-latest.json`, or a version's `manifest.json`).
+#[derive(serde::Deserialize)]
+struct CoreManifest {
+    version: String,
+    generation: Option<u64>,
+    targets: std::collections::BTreeMap<String, CoreTarget>,
+}
+
+#[derive(serde::Deserialize)]
+struct CoreTarget {
+    url: String,
+    sha256: String,
+}
+
+/// This machine's name in a core release list (`linux-x86_64`).
+fn core_target() -> String {
+    let os = if cfg!(target_os = "macos") { "macos" } else if cfg!(windows) { "windows" } else { "linux" };
+    format!("{os}-{}", std::env::consts::ARCH)
+}
+
+/// A release list's address: the latest one, or one version's.
+fn manifest_url(base: &str, version: Option<&str>) -> String {
+    let base = base.trim_end_matches('/');
+    match version {
+        Some(v) => format!("{base}/download/v{v}/manifest.json"),
+        None => format!("{base}/latest/download/core-latest.json"),
+    }
+}
+
+fn parse_manifest(text: &str) -> Result<CoreManifest, String> {
+    serde_json::from_str(text).map_err(|e| format!("the core release list is damaged: {e}"))
+}
+
+/// The download a list offers this machine, once it clears `at_least`.
+fn download_for<'a>(manifest: &'a CoreManifest, target: &str, at_least: Option<&str>) -> Result<(&'a str, &'a str), String> {
+    if let Some(min) = at_least
+        && crate::update::newer(min, &manifest.version)
+    {
+        return Err(format!("the latest core ({}) is older than the {min} this app needs", manifest.version));
+    }
+    let entry = manifest.targets.get(target).ok_or_else(|| format!("no core build for {target} in {}", manifest.version))?;
+    Ok((entry.url.as_str(), entry.sha256.as_str()))
+}
+
+/// Downloads `url` to `file` and checks it against `sha` before it is used.
+fn fetch_checked(url: &str, sha: &str, file: &Path) -> Result<(), String> {
+    let out = crate::spawn::command(crate::update::system("curl"))
+        .args(["-fsSL", "--max-time", "600", "-o"])
+        .arg(file)
+        .arg(url)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("curl: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("{url}: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    let bytes = std::fs::read(file).map_err(|e| e.to_string())?;
+    if crate::update::sha256(&bytes) != sha.to_ascii_lowercase() {
+        return Err("the core download is damaged (checksum mismatch)".into());
+    }
+    Ok(())
+}
+
+/// The herdr-core inside an unpacked release archive: at its root, or in
+/// the macOS bundle the archive also carries.
+fn unpacked_core(dir: &Path) -> Option<PathBuf> {
+    let exe = dir.join(format!("herdr-core{}", std::env::consts::EXE_SUFFIX));
+    if exe.is_file() {
+        return Some(exe);
+    }
+    let bundled = dir.join("Herdr Core.app/Contents/MacOS/herdr-core");
+    bundled.is_file().then_some(bundled)
+}
+
+fn unpack_core(archive: &Path, dir: &Path) -> Result<PathBuf, String> {
+    // System32's tar on Windows: it opens the zip the Windows build ships.
+    let out = crate::spawn::command(crate::update::system("tar")).arg("-xf").arg(archive).arg("-C").arg(dir).stdin(Stdio::null()).output().map_err(|e| format!("tar: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("tar: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    unpacked_core(dir).ok_or_else(|| "the core download holds no herdr-core".into())
+}
+
+/// Updates the core from the fork's releases: downloads the latest build
+/// for this machine, checks its sha256, unpacks it, and lets the installed
+/// hc swap it in (`update --from`). `at_least`: swap only when the latest
+/// is at least this version. A list from another generation keeps the
+/// delegated update, which pins versions exactly. Ok: the version it runs now.
+pub fn update_from_releases(at_least: Option<&str>) -> Result<String, String> {
+    let base = crate::update::core_releases();
+    let manifest = parse_manifest(&crate::update::curl_text(&manifest_url(&base, None))?)?;
+    if manifest.generation.is_some_and(|g| g != crate::hc::GENERATION) {
+        return update_to(at_least);
+    }
+    let (url, sha) = download_for(&manifest, &core_target(), at_least)?;
+    let dir = std::env::temp_dir().join(format!("herdr-core-update-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let staged = (|| {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let archive = dir.join(url.rsplit('/').next().unwrap_or("core.tar.gz"));
+        fetch_checked(url, sha, &archive)?;
+        unpack_core(&archive, &dir)
+    })();
+    let result = staged.and_then(|bin| update_from(&bin));
+    let _ = std::fs::remove_dir_all(&dir);
+    result
 }
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
@@ -395,5 +527,137 @@ mod tests {
         let real = dir.join("herdr-core");
         assert_eq!(version(&real).as_deref(), Some("hc 0.1.1"));
         assert_eq!(find(Some(real.to_str().unwrap())), Some(real));
+    }
+
+    #[test]
+    fn core_manifest_urls_follow_the_fork_layout() {
+        let base = "https://github.com/aimachy/herdr-core/releases";
+        assert_eq!(manifest_url(base, None), "https://github.com/aimachy/herdr-core/releases/latest/download/core-latest.json");
+        assert_eq!(manifest_url(base, Some("0.1.22")), "https://github.com/aimachy/herdr-core/releases/download/v0.1.22/manifest.json");
+        assert_eq!(manifest_url("https://example.test/releases/", None), "https://example.test/releases/latest/download/core-latest.json");
+    }
+
+    #[test]
+    fn core_manifest_offers_downloads_and_refuses_shortfalls() {
+        let text = r#"{"version":"0.1.22","generation":1,"notes":"x","targets":{"linux-x86_64":{"url":"https://example.test/herdr-core-linux-x86_64.tar.gz","sha256":"ab12"}}}"#;
+        let manifest = parse_manifest(text).unwrap();
+        assert_eq!(manifest.version, "0.1.22");
+        let offered = ("https://example.test/herdr-core-linux-x86_64.tar.gz", "ab12");
+        assert_eq!(download_for(&manifest, "linux-x86_64", None), Ok(offered));
+        assert_eq!(download_for(&manifest, "linux-x86_64", Some("0.1.20")), Ok(offered));
+        // Below the floor the app asked for: refused before any download.
+        let err = download_for(&manifest, "linux-x86_64", Some("0.2.0")).unwrap_err();
+        assert!(err.contains("0.2.0"), "{err}");
+        // No build for this machine.
+        assert!(download_for(&manifest, "windows-x86_64", None).unwrap_err().contains("windows-x86_64"));
+        // A damaged list is an error, never an empty manifest.
+        assert!(parse_manifest("not json").is_err());
+        assert!(parse_manifest("{}").is_err());
+    }
+
+    #[test]
+    fn update_from_args_hand_the_binary_to_hc() {
+        assert_eq!(update_from_args(Path::new("/tmp/new/herdr-core")), ["update", "--from", "/tmp/new/herdr-core", "--json"]);
+    }
+
+    #[test]
+    fn a_download_that_fails_its_checksum_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("herdr-core-fetch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("core.bin");
+        std::fs::write(&source, b"core bytes").unwrap();
+        let url = format!("file://{}", source.display());
+        let out = dir.join("out.bin");
+        assert!(fetch_checked(&url, &crate::update::sha256(b"core bytes"), &out).is_ok());
+        let err = fetch_checked(&url, &"0".repeat(64), &out).unwrap_err();
+        assert!(err.contains("checksum mismatch"), "{err}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_unpacked_release_yields_its_core() {
+        let dir = std::env::temp_dir().join(format!("herdr-core-unpacked-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(unpacked_core(&dir), None);
+        let exe = dir.join(format!("herdr-core{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&exe, "bin").unwrap();
+        assert_eq!(unpacked_core(&dir), Some(exe));
+        // Without a root binary, the macOS bundle's binary is the core.
+        let other = std::env::temp_dir().join(format!("herdr-core-bundled-{}", std::process::id()));
+        let bundled = other.join("Herdr Core.app/Contents/MacOS/herdr-core");
+        std::fs::create_dir_all(bundled.parent().unwrap()).unwrap();
+        std::fs::write(&bundled, "bin").unwrap();
+        assert_eq!(unpacked_core(&other), Some(bundled));
+        std::fs::remove_dir_all(dir).unwrap();
+        std::fs::remove_dir_all(other).unwrap();
+    }
+
+    // End to end against a file:// fixture in the fork's layout and a fake
+    // installed hc that only records how it was called.
+    #[cfg(unix)]
+    #[test]
+    fn update_from_releases_downloads_checks_and_hands_over() {
+        const CHILD: &str = "HERDR_TEST_CORE_FROM_RELEASES";
+        if std::env::var_os(CHILD).is_none() {
+            use std::os::unix::fs::PermissionsExt;
+            let root = std::env::temp_dir().join(format!("herdr-core-from-releases-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            let target = core_target();
+            let stage = root.join("stage");
+            std::fs::create_dir_all(&stage).unwrap();
+            let payload = stage.join("herdr-core");
+            std::fs::write(&payload, "#!/bin/sh\necho hc 0.1.23\n").unwrap();
+            std::fs::set_permissions(&payload, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let archive = root.join(format!("herdr-core-{target}.tar.gz"));
+            let tar = Command::new("tar").arg("-czf").arg(&archive).arg("-C").arg(&stage).arg("herdr-core").output().unwrap();
+            assert!(tar.status.success(), "{}", String::from_utf8_lossy(&tar.stderr));
+            let mut targets = serde_json::Map::new();
+            targets.insert(target, serde_json::json!({ "url": format!("file://{}", archive.display()), "sha256": crate::update::sha256(&std::fs::read(&archive).unwrap()) }));
+            let manifest = serde_json::json!({ "version": "0.1.23", "generation": crate::hc::GENERATION, "targets": targets });
+            let latest = root.join("latest/download");
+            std::fs::create_dir_all(&latest).unwrap();
+            std::fs::write(latest.join("core-latest.json"), manifest.to_string()).unwrap();
+            let installed = root.join("installed/herdr-core");
+            std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+            std::fs::write(&installed, "#!/bin/sh\nif [ \"$1\" = --version ]; then echo hc 0.1.21; exit 0; fi\nprintf '%s\\n' \"$*\" >> \"$HERDR_FAKE_RECORD\"\nprintf '%s\\n' '{\"now\":\"hc 0.1.23\"}'\n").unwrap();
+            std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "core_bin::tests::update_from_releases_downloads_checks_and_hands_over", "--nocapture"])
+                .env(CHILD, "1")
+                .env("HERDR_FIXTURE_ROOT", &root)
+                .env("HERDR_CORE_RELEASES_URL", format!("file://{}", root.display()))
+                .env("HERDR_FAKE_RECORD", root.join("record"))
+                .output()
+                .unwrap();
+            std::fs::remove_dir_all(&root).unwrap();
+            assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        let root = PathBuf::from(std::env::var("HERDR_FIXTURE_ROOT").unwrap());
+        let record = root.join("record");
+        use_core(root.join("installed/herdr-core"));
+        // The happy path: the app downloads, checks, and hands hc the binary.
+        assert_eq!(update_from_releases(None).as_deref(), Ok("hc 0.1.23"));
+        let calls = std::fs::read_to_string(&record).unwrap();
+        let args: Vec<&str> = calls.trim().split(' ').collect();
+        assert_eq!(args[..2], ["update", "--from"]);
+        assert!(args[2].ends_with("herdr-core"), "{}", args[2]);
+        assert_eq!(args[3], "--json");
+        // A damaged download is refused before hc is asked again.
+        std::fs::remove_file(&record).unwrap();
+        let latest = root.join("latest/download/core-latest.json");
+        let mut manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&latest).unwrap()).unwrap();
+        manifest["targets"][core_target()]["sha256"] = serde_json::json!("0".repeat(64));
+        std::fs::write(&latest, manifest.to_string()).unwrap();
+        let err = update_from_releases(None).unwrap_err();
+        assert!(err.contains("checksum mismatch"), "{err}");
+        assert!(!record.exists(), "hc must not be asked to swap in a damaged download");
+        // Below the app's floor: refused, and hc is still not asked.
+        let err = update_from_releases(Some("0.2.0")).unwrap_err();
+        assert!(err.contains("0.2.0"), "{err}");
+        assert!(!record.exists());
+        // With nothing waiting, the plain delegation is untouched.
+        assert_eq!(update().as_deref(), Ok("hc 0.1.23"));
+        assert_eq!(std::fs::read_to_string(&record).unwrap().trim(), "update --json");
     }
 }

@@ -77,7 +77,7 @@ fn releases() -> String {
 }
 
 /// The core's own release base: its override first, then the shared one.
-fn core_releases() -> String {
+pub(crate) fn core_releases() -> String {
     std::env::var("HERDR_CORE_RELEASES_URL")
         .or_else(|_| std::env::var("HERDR_RELEASES_URL"))
         .unwrap_or_else(|_| "https://github.com/aimachy/herdr-core/releases".into())
@@ -243,18 +243,27 @@ fn after_update_target<'a>(have: &str, latest: Option<&'a CoreRelease>, generati
     })
 }
 
-/// `hc update` (terminals keep running; the app reconnects when the core restarts).
+/// Applies the core update the checker found (terminals keep running; the
+/// app reconnects when the core restarts). The build comes from the fork's
+/// releases, like the check: delegating to the installed hc's own update
+/// asks whichever list that hc was built with, so a core installed from
+/// upstream would report success and stay upstream. With nothing waiting,
+/// the delegated update runs as before.
 pub fn update_core() {
-    {
+    let ready = {
         let mut c = CORE.lock().unwrap();
         if c.updating || c.managed.is_some() {
             return;
         }
         c.updating = true;
         c.error = None;
-    }
-    std::thread::spawn(|| {
-        let result = crate::core_bin::update();
+        c.ready.clone()
+    };
+    std::thread::spawn(move || {
+        let result = match &ready {
+            Some(_) => crate::core_bin::update_from_releases(None),
+            None => crate::core_bin::update(),
+        };
         let mut c = CORE.lock().unwrap();
         c.updating = false;
         match result {
@@ -374,7 +383,7 @@ pub(crate) fn sha256(bytes: &[u8]) -> String {
     sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn curl_text(url: &str) -> Result<String, String> {
+pub(crate) fn curl_text(url: &str) -> Result<String, String> {
     let out = crate::spawn::command(system("curl")).args(["-fsSL", "--max-time", "30", url]).stdin(Stdio::null()).output().map_err(|e| format!("curl: {e}"))?;
     if !out.status.success() {
         return Err(format!("{url}: {}", String::from_utf8_lossy(&out.stderr).trim()));
@@ -594,10 +603,11 @@ fn marker() -> PathBuf {
 }
 
 /// The first start after an app update brings the core to the latest release
-/// of this app's generation (`hc update --version`, terminals kept). If the
-/// release check fails or offers another generation, keep the minimum pin.
-/// Cores before 0.1.5 lack `--version`: they keep their same-generation update
-/// path. A core a package manager owns is left alone.
+/// of this app's generation (the app downloads it from the fork's releases
+/// and hands it to `hc update --from`; terminals kept). If the release check
+/// fails or offers another generation, keep the minimum pin. Cores before
+/// 0.1.5 keep their same-generation update path. A core a package manager
+/// owns is left alone.
 pub fn after_update(connected: std::sync::Arc<crate::hc::Core>) {
     if std::fs::remove_file(marker()).is_err() {
         return;
@@ -610,7 +620,10 @@ pub fn after_update(connected: std::sync::Arc<crate::hc::Core>) {
         CORE.lock().unwrap().updating = true;
         let latest = latest_core().map_err(|e| tracing::warn!("core release check after app update: {e}")).ok();
         let target = after_update_target(have.trim_start_matches("hc "), latest.as_ref(), crate::hc::GENERATION, crate::hc::core_min());
-        let result = crate::core_bin::update_to(target);
+        let result = match target {
+            Some(target) => crate::core_bin::update_from_releases(Some(target)),
+            None => crate::core_bin::update_to(None),
+        };
         let mut core = CORE.lock().unwrap();
         core.updating = false;
         match result {
