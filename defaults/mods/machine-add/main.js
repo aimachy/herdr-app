@@ -1,7 +1,8 @@
 // Add a machine: the hosts in ~/.ssh/config to pick from (or type one),
 // each added with one click (`hc machine add`). A machine with no config
-// entry goes in through the password form instead: it answers in the
-// dialog (password, a first host key to trust), never in a terminal.
+// entry goes in through the form instead: it answers in the dialog (a
+// password — or none, for a gateway that signs the user name in alone —
+// a first host key to trust, an install to approve), never in a terminal.
 // Config hosts that need an answer still get the terminal instructions.
 // Machines that need no answers are added quietly. Opened as a dialog
 // (`mod.open machine-add`); the sidebars' Add machine and the welcome
@@ -76,14 +77,18 @@ export default class MachineAdd extends View {
     // The password form: host/user/password/port, for a machine with no
     // ssh config entry and no key yet. The password lives only in this
     // dialog's memory: it goes to hc over stdin once, to plant a key.
+    // Left empty, the password is no refusal: hc tries the automatic
+    // ways in instead (--auto), and the dialog answers for those too.
     this.form = { host: "", user: "", pass: "", port: "" };
     this.formState = null;
     this.formAdding = false;
+    this.formInstallAsk = false; // auto add met a machine with no hc: offer the install here
+    this.installAsk = null; // a typed target with no hc there: offer the install in its row
     this.trust = null; // a presented host key's fingerprint, awaiting the person's yes
     this.passwordDisabled = null; // { host, user, command }: that server takes no password logins at all
     this.formFocus = null;
     this.formInputs = {};
-    for (const [key, placeholder] of [["host", "IP or host name"], ["port", "Port (22)"], ["user", "User name"], ["pass", "Password"]]) {
+    for (const [key, placeholder] of [["host", "IP or host name"], ["port", "Port (22)"], ["user", "User name"], ["pass", "Password (optional)"]]) {
       const input = InputState.new({ placeholder });
       input.on("change", (_e, cx) => { this.form[key] = input.value(); cx.notify(); });
       input.on("focus", (_e, cx) => { this.formFocus = key; cx.notify(); });
@@ -136,14 +141,18 @@ export default class MachineAdd extends View {
     return this.added.some((m) => m.target === target || m.name === target || m.host === target);
   }
 
-  add(target, cx) {
+  add(target, cx, install = false) {
     target = target.trim();
     if (!target || this.state[target] === "adding") return;
     this.pending.delete(target);
+    if (!install && this.installAsk === target) this.installAsk = null;
     this.state[target] = "adding";
     cx.notify();
     cx.spawn(async (cx) => {
-      const r = await hc(["machine", "add", target, "--json"]).catch((e) => ({ code: 1, stderr: String(e), stdout: "" }));
+      const args = ["machine", "add", target];
+      if (install) args.push("--install");
+      args.push("--json");
+      const r = await hc(args).catch((e) => ({ code: 1, stderr: String(e), stdout: "" }));
       let why = null;
       try {
         why = r.code === 0 ? null : (JSON.parse(r.stdout || r.stderr).error ?? { message: (r.stderr || r.stdout).trim() });
@@ -152,11 +161,23 @@ export default class MachineAdd extends View {
       }
       if (!why) {
         delete this.state[target];
+        if (this.installAsk === target) this.installAsk = null;
         this.input.set_value("");
         this.typed = "";
         await this.refresh();
-        await this.checkMac(target);
-      } else if (["hc_missing", "incompatible", "login_needed", "auth_failed", "host_key"].includes(why.kind) || /password|passphrase|host key|permission denied|login/i.test(why.message ?? "")) {
+        // The machine's own target (a pasted ssh command comes back
+        // normalized) is what the added list knows it by.
+        let addedTarget = target;
+        try { addedTarget = JSON.parse(r.stdout)?.target ?? target; } catch {}
+        await this.checkMac(addedTarget);
+      } else if (why.kind === "hc_missing" || why.kind === "incompatible") {
+        // No answers a person must type: the install rides the login
+        // that already worked, so it is offered here, not in a terminal.
+        this.installAsk = target;
+        this.state[target] = why.kind === "hc_missing"
+          ? "That machine has no herdr-core yet. Install this herdr-core there and add it?"
+          : "That machine's herdr-core is too old to talk to. Install this herdr-core there and add it?";
+      } else if (["login_needed", "auth_failed", "host_key"].includes(why.kind) || /password|passphrase|host key|permission denied|login/i.test(why.message ?? "")) {
         const quoted = shellArg(target);
         this.pending.add(target);
         this.state[target] = `Couldn't add ${target} here: it needs you to answer something (a password, a new host key, or installing herdr-core there). Run \`hc machine add ${quoted}\` in a terminal. \`hc machine --help\` shows the options.`;
@@ -168,20 +189,29 @@ export default class MachineAdd extends View {
 
   // Add by password: hc's embedded ssh logs in once, plants a per-machine
   // key, and pins the host key — after the person trusts its fingerprint.
+  // With the password left empty there is nothing to refuse: hc runs the
+  // add automatically (--auto) — a login with no credentials speaks first
+  // (a token gateway), the ssh program's keys are the fallback, and this
+  // dialog answers for the host key and the install the same way.
   // Errors arrive as kinds and each gets its own words, here in the dialog.
-  addWithPassword(cx, trustKey = null) {
+  addWithPassword(cx, trustKey = null, install = false) {
     const host = this.form.host.trim(), user = this.form.user.trim(), port = this.form.port.trim() || "22";
     if (!host || !user || this.formAdding) return;
-    if (!this.form.pass) { this.formState = "Type the password for that machine."; cx.notify(); return; }
+    const auto = !this.form.pass;
     this.formAdding = true;
     this.formState = null;
+    this.formInstallAsk = false;
     this.passwordDisabled = null;
     if (!trustKey) this.trust = null;
     cx.notify();
     cx.spawn(async (cx) => {
-      const args = ["machine", "add", "--host", host, "--user", user, "--port", port, "--password-stdin", "--json"];
+      const args = ["machine", "add", "--host", host, "--user", user, "--port", port];
+      if (auto) args.push("--auto");
+      else args.push("--password-stdin");
       if (trustKey) args.push("--trust-host-key", trustKey);
-      const r = await hc(args, { stdin: this.form.pass }).catch((e) => ({ code: 1, stderr: String(e), stdout: "" }));
+      if (install) args.push("--install");
+      args.push("--json");
+      const r = await (auto ? hc(args) : hc(args, { stdin: this.form.pass })).catch((e) => ({ code: 1, stderr: String(e), stdout: "" }));
       this.formAdding = false;
       let why = null;
       try {
@@ -215,10 +245,21 @@ export default class MachineAdd extends View {
         this.formState = null;
       } else if (why.kind === "auth_failed" || why.kind === "needs_login") {
         this.trust = null;
-        this.formState = "Login failed: the machine refused that user name or password.";
+        this.formState = auto
+          ? "That machine does not sign in on its own: it wants a password, or a key of its own. Type its password above and add again."
+          : "Login failed: the machine refused that user name or password.";
       } else if (why.kind === "unreachable") {
         this.trust = null;
         this.formState = `Couldn't reach ${host}:${port}: check the address, and that ssh is running there.`;
+      } else if ((why.kind === "hc_missing" || why.kind === "incompatible") && auto) {
+        // The install rides the ssh program's login, which the automatic
+        // way in has already proven — so it is offered here, not in a
+        // terminal. Keep this.trust: the retry still needs the person's
+        // yes on the host key the probe presented.
+        this.formInstallAsk = true;
+        this.formState = why.kind === "hc_missing"
+          ? "That machine has no herdr-core yet. Install this herdr-core there and add it?"
+          : "That machine's herdr-core is too old to talk to. Install this herdr-core there and add it?";
       } else if (why.kind === "hc_missing") {
         this.trust = null;
         this.formState = "That machine has no herdr-core yet: run the fleet install script on it first (it installs herdr-core and Pi), then add it here.";
@@ -270,7 +311,7 @@ export default class MachineAdd extends View {
     return v_flex()
       .child(div().pt(14).pb(6).text_size(11.5).font_medium().text_color(t.dim).child("Or add with a password"))
       .child(div().pb(8).text_size(12.5).line_height("18px").text_color(t.muted)
-        .child("For a fresh VPS: the password signs in once, plants a key, and is never saved. From then on the key does the signing in."))
+        .child("For a fresh VPS: the password signs in once, plants a key, and is never saved. From then on the key does the signing in. Leave it empty for a machine your ssh already reaches, or a gateway that signs the user name in alone (a token in it, say): Herdr tries that way in, and asks here about its host key and about installing herdr-core."))
       .child(h_flex().gap(8).child(this.formField("host", true)).child(this.formField("port", false)))
       .child(div().h(8))
       .child(h_flex().gap(8).child(this.formField("user", true)).child(this.formField("pass", true)))
@@ -315,6 +356,25 @@ export default class MachineAdd extends View {
                 .hover((s) => s.opacity(0.88))
                 .on_click((_e, cx) => this.addWithPassword(cx, this.trust))
                 .child("Trust this key and add"),
+            ),
+          )
+          .when(Boolean(this.formInstallAsk), (el) =>
+            el.child(
+              div()
+                .id("ma-form-install")
+                .h(34)
+                .px(14)
+                .flex()
+                .items_center()
+                .rounded(8)
+                .bg(t.solid)
+                .text_color(t.solid_foreground)
+                .text_size(12.5)
+                .font_medium()
+                .cursor_pointer()
+                .hover((s) => s.opacity(0.88))
+                .on_click((_e, cx) => this.addWithPassword(cx, this.trust, true))
+                .child("Install herdr-core and add"),
             ),
           ),
       )
@@ -411,6 +471,11 @@ export default class MachineAdd extends View {
     const command = `hc machine add ${shellArg(target)}`;
     return v_flex().gap(5)
       .child(div().text_size(12).text_color(t.blocked).child(TextView.html(`ma-message-${target}`, `<span>${text}</span>`).selectable(true)))
+      .when(this.installAsk === target, (el) => el.child(h_flex().child(div()
+        .id(`ma-install-${target}`).px(10).py(4).rounded(6).bg(t.solid).text_color(t.solid_foreground)
+        .text_size(12).font_medium().cursor_pointer().hover(s => s.opacity(0.88))
+        .on_click((_e, cx) => this.add(target, cx, true))
+        .child("Install herdr-core and add"))))
       .when(this.pending.has(target), (el) => el.child(h_flex().child(div()
         .id(`ma-copy-${target}`).px(10).py(4).rounded(6).bg(t.raised).text_color(t.foreground)
         .text_size(12).cursor_pointer().hover(s => s.bg(t.hover))

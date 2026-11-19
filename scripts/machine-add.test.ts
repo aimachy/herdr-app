@@ -7,6 +7,7 @@ const source = await readFile(new URL("../defaults/mods/machine-add/main.js", im
 
 function setup(result: any) {
   const calls: string[][] = [];
+  const callOpts: any[] = [];
   const overlays: unknown[] = [];
   const machines: any[] = [];
   const probes: unknown[] = [];
@@ -22,11 +23,13 @@ function setup(result: any) {
       probes.push(options.on);
       return { stdout: "Darwin\n/remote/herdr-core\n" };
     },
-    hc: async (args: string[]) => {
+    hc: async (args: string[], opts?: any) => {
       calls.push(args);
+      callOpts.push(opts);
+      const r = typeof result === "function" ? result(args) : result;
       if (args[1] === "add") {
-        if (result.code === 0) machines.push({ target: args[2], name: args[2] });
-        return result;
+        if (r.code === 0) machines.push({ target: args[2], name: args[2] });
+        return r;
       }
       return { code: 0, stdout: JSON.stringify({ machines }) };
     },
@@ -39,7 +42,8 @@ function setup(result: any) {
   };
   view.init({}, cx);
   return {
-    view, calls, overlays, machines, probes,
+    view, calls, callOpts, overlays, machines, probes, cx,
+    async settle() { await task; },
     async add(target = "my-host") {
       await task;
       view.typed = target;
@@ -50,7 +54,7 @@ function setup(result: any) {
   };
 }
 
-for (const kind of ["hc_missing", "incompatible", "login_needed", "auth_failed", "host_key"]) {
+for (const kind of ["login_needed", "auth_failed", "host_key"]) {
   test(`${kind} gives terminal instructions without starting a terminal`, async () => {
     const s = setup({ code: 1, stdout: JSON.stringify({ error: { kind, message: "needs attention" } }) });
     await s.add();
@@ -124,6 +128,80 @@ test("success refreshes the list and clears the typed target without opening any
   expect(s.probes).toEqual(["my-host"]);
   expect(s.calls.every((args) => args[0] === "machine")).toBe(true);
   expect(s.overlays).toEqual([]);
+});
+
+for (const kind of ["hc_missing", "incompatible"]) {
+  test(`${kind} offers the install in the dialog, and the retry installs`, async () => {
+    const s = setup((args: string[]) =>
+      args.includes("--install")
+        ? { code: 0, stdout: "{}" }
+        : { code: 1, stdout: JSON.stringify({ error: { kind, message: "no hc there" } }) });
+    await s.add();
+    expect(s.view.state["my-host"]).toContain("herdr-core");
+    expect(s.view.state["my-host"]).not.toContain("Couldn't add my-host here");
+    expect(s.view.installAsk).toBe("my-host");
+    expect(s.view.isAdded("my-host")).toBe(false);
+    s.view.add("my-host", s.cx, true);
+    await s.settle();
+    const adds = s.calls.filter((args) => args[1] === "add");
+    expect(adds.length).toBe(2);
+    expect(adds[1]).toContain("--install");
+    expect(s.view.installAsk).toBe(null);
+    expect(s.view.isAdded("my-host")).toBe(true);
+  });
+}
+
+async function form(s: any, pass: string) {
+  await s.settle();
+  s.view.form.host = "gw.example";
+  s.view.form.user = "tok_abc";
+  s.view.form.port = "2222";
+  s.view.form.pass = pass;
+  s.view.addWithPassword(s.cx);
+  await s.settle();
+  return s.calls.findIndex((args: string[]) => args[1] === "add");
+}
+
+test("an empty form password adds automatically and sends no password", async () => {
+  const s = setup({ code: 0, stdout: "{}" });
+  const i = await form(s, "");
+  const add = s.calls[i];
+  expect(add).toContain("--auto");
+  expect(add).not.toContain("--password-stdin");
+  expect(s.callOpts[i]?.stdin).toBeUndefined();
+});
+
+test("a typed form password still goes over stdin, never as an argument", async () => {
+  const s = setup({ code: 0, stdout: "{}" });
+  const i = await form(s, "secret");
+  const add = s.calls[i];
+  expect(add).toContain("--password-stdin");
+  expect(add).not.toContain("--auto");
+  expect(add).not.toContain("secret");
+  expect(s.callOpts[i]?.stdin).toBe("secret");
+});
+
+test("an automatic add with no hc there offers the install in the form", async () => {
+  const s = setup((args: string[]) =>
+    args.includes("--install")
+      ? { code: 0, stdout: "{}" }
+      : { code: 1, stdout: JSON.stringify({ error: { kind: "hc_missing", message: "hc is not installed" } }) });
+  await form(s, "");
+  expect(s.view.formInstallAsk).toBe(true);
+  expect(s.view.formState).toContain("no herdr-core yet");
+  s.view.addWithPassword(s.cx, s.view.trust, true);
+  await s.settle();
+  const adds = s.calls.filter((args: string[]) => args[1] === "add");
+  expect(adds.length).toBe(2);
+  expect(adds[1]).toContain("--install");
+  expect(adds[1]).toContain("--auto");
+});
+
+test("an automatic add the machine refuses asks for its password instead", async () => {
+  const s = setup({ code: 1, stdout: JSON.stringify({ error: { kind: "needs_login", message: "wants a login" } }) });
+  await form(s, "");
+  expect(s.view.formInstallAsk).toBe(false);
+  expect(s.view.formState).toContain("Type its password");
 });
 
 // The ssh config reading with real files and a real sh, started the way Herdr
